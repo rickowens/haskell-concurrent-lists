@@ -36,16 +36,17 @@ import Control.Monad (void)
 concurrently :: [IO a] -> IO [a]
 concurrently ios = do
   jobs <- mapM async ios
-  mapM takeMVar jobs
+  results <- mapM takeMVar jobs
+  case sequence results of
+    Right vals -> return vals
+    Left err -> throw err
 
 
 {- |
   Like `sequence_`, but all io operations are executed concurrently.
 -}
 concurrently_ :: [IO a] -> IO ()
-concurrently_ ios = do
-  jobs <- mapM async ios
-  mapM_ takeMVar jobs
+concurrently_ = void . concurrently
 
 
 {- |
@@ -58,7 +59,10 @@ concurrentN n ios = do
   packages <- mapM package ios
   mapM_ (putMVar chan . Just) packages
   putMVar chan Nothing -- send the kill signal
-  mapM (takeMVar . snd) packages
+  results <- mapM (takeMVar . snd) packages
+  case sequence results of
+    Right vals -> return vals
+    Left err -> throw (err :: SomeException)
   where
     package io = do
       response <- newEmptyMVar
@@ -72,9 +76,7 @@ concurrentN n ios = do
           putMVar chan Nothing
         Just (io, response) -> do
           result <- try io
-          putMVar response $ case result of
-            Left err -> throw (err :: SomeException)
-            Right val -> val
+          putMVar response result
           -- loop until we get `Nothing`
           handler chan
 
@@ -122,14 +124,12 @@ cMapMN_ n f = concurrentN_ n . map f
 {- |
   Kicks off an IO in a new thread
 -}
-async :: IO a -> IO (MVar a)
+async :: IO a -> IO (MVar (Either SomeException a))
 async io = do
   job <- newEmptyMVar
   forkIO $ do
     result <- try io
-    case result of
-      Left err -> putMVar job (throw (err :: SomeException))
-      Right val -> putMVar job val
+    putMVar job result
   return job
 
 
